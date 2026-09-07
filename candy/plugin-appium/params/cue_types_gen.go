@@ -67,6 +67,42 @@ type AppiumInput struct {
 
 	RequestBody string `yaml:"request_body,omitempty" json:"request_body,omitempty"`
 
+	// session (Cutover E, E-5) — the DETACHED device-side screen-recording bracket
+	// (plan §Cutover E, unit 5): an appium-session start hands THIS plugin's OWN
+	// binary (in recorder mode, CHARLY_APPIUM_RECORDER=1) to the runner's generic
+	// background-session service (plugin-check's verb:session seam). The recorder
+	// polls the persisted Appium session file for the plan's WebDriver session, opens
+	// startRecordingScreen on it, rotates the bracket when the recording cap
+	// approaches, and on SIGTERM pulls stopRecordingScreen → MP4 + the evidence
+	// row.json. venue/phase are stamped into the evidence row; artifact_dir is the
+	// runner-injected generic evidence dir the pulled MP4s land in.
+	Action string `yaml:"action,omitempty" json:"action,omitempty"`
+
+	// time_limit — the device-side recording cap in seconds (startRecordingScreen's
+	// timeLimit; default 1800, Appium's standard max). The recorder rotates the
+	// bracket at 80% of the cap so a phase longer than the cap keeps coverage.
+	TimeLimit int `yaml:"time_limit,omitempty" json:"time_limit,omitempty"`
+
+	// fps — the device-side encoding rate (startRecordingScreen's fps; optional).
+	Fps int `yaml:"fps,omitempty" json:"fps,omitempty"`
+
+	// video_type — the device-side codec (h264|mpeg4; optional, server default).
+	VideoType string `yaml:"video_type,omitempty" json:"video_type,omitempty"`
+
+	SessionId string `yaml:"session_id,omitempty" json:"session_id,omitempty"`
+
+	StateDir string `yaml:"state_dir,omitempty" json:"state_dir,omitempty"`
+
+	// artifact_dir — the runner-injected generic evidence-artifact dir (verb-agnostic;
+	// the recorder appends its own appium-<n>.mp4 filenames).
+	ArtifactDir string `yaml:"artifact_dir,omitempty" json:"artifact_dir,omitempty"`
+
+	LogDir string `yaml:"log_dir,omitempty" json:"log_dir,omitempty"`
+
+	Venue string `yaml:"venue,omitempty" json:"venue,omitempty"`
+
+	Phase string `yaml:"phase,omitempty" json:"phase,omitempty"`
+
 	// artifact + validators — screenshot's PNG output path and the post-run
 	// artifact-reality assertions (sdk.RunArtifactValidators reads them off the input).
 	Artifact string `yaml:"artifact,omitempty" json:"artifact,omitempty"`

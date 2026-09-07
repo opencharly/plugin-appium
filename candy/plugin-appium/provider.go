@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/opencharly/plugin-appium/candy/plugin-appium/params"
 	"github.com/opencharly/sdk"
 	"github.com/opencharly/sdk/kit"
 	pb "github.com/opencharly/spec/proto"
@@ -23,12 +24,14 @@ import (
 // checkEnv is the plugin-side decode of charly's CheckEnv (provider_checkenv.go) — the
 // serializable invocation context the host ships as Operation.Env. ContainerName is the
 // host-authoritative container name (charly-<box>[_<instance>], registry-ref-stripped)
-// the plugin uses to reach the running Appium server.
+// the plugin uses to reach the running Appium server; Venue is the shared snapshot's
+// venue id (session evidence-row provenance).
 type checkEnv struct {
 	Box           string `json:"box"`
 	Instance      string `json:"instance"`
 	Mode          string `json:"mode"` // "live" | "box"
 	ContainerName string `json:"container_name"`
+	Venue         string `json:"venue"`
 }
 
 type provider struct{ pb.UnimplementedProviderServer }
@@ -36,7 +39,7 @@ type provider struct{ pb.UnimplementedProviderServer }
 // Invoke runs one `appium:` check step. It decodes the full #Op + the check env, skips
 // in box mode (these probes need a running container with port mappings), dispatches the
 // method, and self-evaluates the matchers + artifact validators.
-func (provider) Invoke(_ context.Context, req *pb.InvokeRequest) (*pb.InvokeReply, error) {
+func (provider) Invoke(ctx context.Context, req *pb.InvokeRequest) (*pb.InvokeReply, error) {
 	var op spec.Op
 	if len(req.GetParamsJson()) > 0 {
 		if err := json.Unmarshal(req.GetParamsJson(), &op); err != nil {
@@ -48,7 +51,11 @@ func (provider) Invoke(_ context.Context, req *pb.InvokeRequest) (*pb.InvokeRepl
 		_ = json.Unmarshal(req.GetEnvJson(), &env)
 	}
 	// The verb's method + per-verb fields ride the desugared plugin input since the
-	// schema-compaction cutover; dispatch decodes the full typed params.AppiumInput.
+	// schema-compaction cutover. session dispatches off the fully TYPED input (the
+	// action/modifiers); the remaining methods decode the full typed params inside
+	// dispatch.
+	var in params.AppiumInput
+	kit.DecodeInput(op.PluginInput, &in)
 	method := kit.InputStr(&op, "method")
 
 	// Live-container verb: skip under `charly check box` (no port mappings on a
@@ -58,6 +65,21 @@ func (provider) Invoke(_ context.Context, req *pb.InvokeRequest) (*pb.InvokeRepl
 	}
 	if env.Box == "" {
 		return sdk.ResultJSON("skip", fmt.Sprintf("appium: %s has no image context", method))
+	}
+
+	// session (Cutover E, E-5): the DETACHED recorder owns the device-side recording
+	// bracket — the provider never talks to the Appium server. start hands the spawn to
+	// the runner's generic background-session service (verb:session) over the
+	// InvokeProvider reverse leg; stop/status talk to that same service. No artifact is
+	// produced inside this Invoke (the recorder pulls the MP4 detached), so
+	// artifactMethod stays false.
+	if method == "session" {
+		cc, err := sdk.NewCheckContext(req.GetExecutorBrokerId(), req.GetEnvJson())
+		if err != nil {
+			return sdk.ResultJSON("fail", fmt.Sprintf("appium: %s: %v", method, err))
+		}
+		out, runErr := runSession(ctx, cc, &env, &in, env.Venue)
+		return sdk.VerbVerdict("appium", method, out, runErr, &op, false)
 	}
 
 	out, runErr := dispatch(&env, &op)

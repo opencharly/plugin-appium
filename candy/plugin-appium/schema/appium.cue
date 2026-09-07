@@ -30,7 +30,7 @@
 #AppiumInput: {
 	// method — the appium method name (the former core #AppiumMethod enum; the
 	// verb's PRIMARY input field, so `appium: status` desugars to {method: "status"}).
-	method: ("status" | "session-create" | "session-delete" | "install-app" | "find" | "click" | "send-keys" | "screenshot" | "get-text" | "get-attribute" | "clear" | "find-all" | "source" | "back" | "gesture-tap" | "gesture-double-tap" | "gesture-long-press" | "gesture-drag" | "gesture-swipe" | "gesture-scroll" | "gesture-fling" | "gesture-pinch-open" | "gesture-pinch-close" | "app-start-activity" | "app-activate" | "app-terminate" | "app-remove" | "app-clear" | "app-is-installed" | "app-state" | "app-current-activity" | "app-current-package" | "key-press" | "key-hide" | "key-shown" | "device-info" | "device-battery" | "device-time" | "device-orientation" | "device-set-orientation" | "device-notifications" | "device-get-clipboard" | "device-set-clipboard" | "device-contexts" | "device-context" | "execute" | "raw") @go(Method,type=string)
+	method: ("status" | "session-create" | "session-delete" | "install-app" | "find" | "click" | "send-keys" | "screenshot" | "get-text" | "get-attribute" | "clear" | "find-all" | "source" | "back" | "gesture-tap" | "gesture-double-tap" | "gesture-long-press" | "gesture-drag" | "gesture-swipe" | "gesture-scroll" | "gesture-fling" | "gesture-pinch-open" | "gesture-pinch-close" | "app-start-activity" | "app-activate" | "app-terminate" | "app-remove" | "app-clear" | "app-is-installed" | "app-state" | "app-current-activity" | "app-current-package" | "key-press" | "key-hide" | "key-shown" | "device-info" | "device-battery" | "device-time" | "device-orientation" | "device-set-orientation" | "device-notifications" | "device-get-clipboard" | "device-set-clipboard" | "device-contexts" | "device-context" | "execute" | "raw" | "session") @go(Method,type=string)
 	// caps — the W3C capabilities JSON (session-create; @path reads a file).
 	caps?: string
 	// session — an explicit session id overriding the persisted session file.
@@ -70,6 +70,32 @@
 	http_method?:  string @go(HTTPMethod)
 	path?:         string
 	request_body?: string @go(RequestBody)
+	// session (Cutover E, E-5) — the DETACHED device-side screen-recording bracket
+	// (plan §Cutover E, unit 5): an appium-session start hands THIS plugin's OWN
+	// binary (in recorder mode, CHARLY_APPIUM_RECORDER=1) to the runner's generic
+	// background-session service (plugin-check's verb:session seam). The recorder
+	// polls the persisted Appium session file for the plan's WebDriver session, opens
+	// startRecordingScreen on it, rotates the bracket when the recording cap
+	// approaches, and on SIGTERM pulls stopRecordingScreen → MP4 + the evidence
+	// row.json. venue/phase are stamped into the evidence row; artifact_dir is the
+	// runner-injected generic evidence dir the pulled MP4s land in.
+	action?: "start" | "stop" | "status" @go(Action)
+	// time_limit — the device-side recording cap in seconds (startRecordingScreen's
+	// timeLimit; default 1800, Appium's standard max). The recorder rotates the
+	// bracket at 80% of the cap so a phase longer than the cap keeps coverage.
+	time_limit?: int & >=1 @go(TimeLimit,type=int)
+	// fps — the device-side encoding rate (startRecordingScreen's fps; optional).
+	fps?: int & >=1 @go(Fps,type=int)
+	// video_type — the device-side codec (h264|mpeg4; optional, server default).
+	video_type?: string @go(VideoType)
+	session_id?: string @go(SessionId)
+	state_dir?:  string @go(StateDir)
+	// artifact_dir — the runner-injected generic evidence-artifact dir (verb-agnostic;
+	// the recorder appends its own appium-<n>.mp4 filenames).
+	artifact_dir?: string @go(ArtifactDir)
+	log_dir?: string @go(LogDir)
+	venue?: string @go(Venue)
+	phase?: string @go(Phase)
 	// artifact + validators — screenshot's PNG output path and the post-run
 	// artifact-reality assertions (sdk.RunArtifactValidators reads them off the input).
 	artifact?:                 string

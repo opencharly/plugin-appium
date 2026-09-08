@@ -193,10 +193,14 @@ func TestRunSessionRecorderBracketsAndFinalizes(t *testing.T) {
 	}
 }
 
-// TestRecorderReBracketsOnSessionChange covers the mid-run session recreation: the
-// plan deletes + recreates the WebDriver session (the session file's id changes) — the
-// recorder closes the first bracket and opens a new one, producing TWO segments.
-func TestRecorderReBracketsOnSessionChange(t *testing.T) {
+// TestRecorderIgnoresSessionFileRotation is the E-5 R2 ONE-identity pin contract:
+// the recorder pins the FIRST session it brackets (the fixture's session-create) and
+// a rotation of the SHARED session file to a DIFFERENT id — the baked suite's
+// transient session-create/delete churn — must NOT close the current bracket NOR
+// re-bracket onto the new id (run 2026.251.1102: the recorder chased three churned
+// identities and its final stop 404'd on the baked suite's dead session). The pinned
+// bracket holds to finalize and its video still lands.
+func TestRecorderIgnoresSessionFileRotation(t *testing.T) {
 	stateDir := t.TempDir()
 	artDir := t.TempDir()
 	xdg := t.TempDir()
@@ -212,25 +216,26 @@ func TestRecorderReBracketsOnSessionChange(t *testing.T) {
 	ch := make(chan error, 1)
 	go func() { ch <- RunSessionRecorder(cfg, done) }()
 	waitFor(t, 2*time.Second, func() bool { s, _ := fake.counts(); return s >= 1 })
-	// recreate the session: new id in the same file
+	// the baked suite rotates the SHARED file to ITS transient session
 	t.Setenv("XDG_CACHE_HOME", xdg)
-	if err := saveAppiumSession(&AppiumSession{SessionID: "sid-2", BaseURL: fake.URL + "/wd/hub", CreatedAt: time.Now().UTC(), Image: "bed"}); err != nil {
-		t.Fatalf("re-save session: %v", err)
+	if err := saveAppiumSession(&AppiumSession{SessionID: "baked-sid", BaseURL: fake.URL + "/wd/hub", CreatedAt: time.Now().UTC(), Image: "bed"}); err != nil {
+		t.Fatalf("rotate session file: %v", err)
 	}
-	waitFor(t, 2*time.Second, func() bool { s, _ := fake.counts(); return s >= 2 })
+	time.Sleep(200 * time.Millisecond)
+	s, stop := fake.counts()
+	if s != 1 {
+		t.Errorf("start calls = %d, want 1 (no re-bracket onto the rotated id)", s)
+	}
+	if stop != 0 {
+		t.Errorf("stop calls = %d, want 0 (the pinned bracket must NOT be dropped by the rotation)", stop)
+	}
+	// finalize: the held pinned bracket's stop pulls the video and the row lands
 	close(done)
 	if err := <-ch; err != nil {
 		t.Fatalf("RunSessionRecorder: %v", err)
 	}
-
-	s, stop := fake.counts()
-	if s != 2 || stop != 2 {
-		t.Fatalf("start/stop calls = %d/%d, want 2/2", s, stop)
-	}
-	for i := 1; i <= 2; i++ {
-		if _, err := os.Stat(filepath.Join(artDir, "appium-"+strconv.Itoa(i)+".mp4")); err != nil {
-			t.Errorf("appium-%d.mp4 missing: %v", i, err)
-		}
+	if s, stop := fake.counts(); s != 1 || stop != 1 {
+		t.Fatalf("start/stop = %d/%d, want 1/1 (the ONE pinned bracket finalizes once)", s, stop)
 	}
 	raw, err := os.ReadFile(filepath.Join(stateDir, evidenceFile))
 	if err != nil {
@@ -240,8 +245,11 @@ func TestRecorderReBracketsOnSessionChange(t *testing.T) {
 	if err := json.Unmarshal(raw, &row); err != nil {
 		t.Fatalf("decode row.json: %v", err)
 	}
-	if len(row.Segment) != 2 || len(row.Artifact) != 2 {
-		t.Errorf("row segments/artifacts = %d/%d, want 2/2", len(row.Segment), len(row.Artifact))
+	if len(row.Segment) != 1 || len(row.Artifact) != 1 {
+		t.Errorf("row segments/artifacts = %d/%d, want 1/1 (the pinned bracket's video)", len(row.Segment), len(row.Artifact))
+	}
+	if len(row.Segment) == 1 && row.Segment[0]["session"] != "sid-1" {
+		t.Errorf("segment session = %v, want sid-1 (the Pinned fixture session, not the rotated id)", row.Segment[0]["session"])
 	}
 }
 

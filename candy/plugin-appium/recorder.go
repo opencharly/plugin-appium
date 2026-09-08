@@ -156,6 +156,15 @@ func runBracketLoop(cfg RecorderConfig, done <-chan struct{}) []closedBracket {
 	tick := time.NewTicker(cfg.PollInterval)
 	defer tick.Stop()
 	var current *recordingBracket
+	// pinned is the recorder's ONE-IDENTITY latch: the FIRST session it brackets
+	// (the fixture's session-create). Rotations of the SHARED session file to OTHER
+	// ids are the baked suite's transient churn (its own session-create/delete for
+	// its av-* steps) and must neither drop the current bracket nor re-target it
+	// (E-5 R2, run 2026.251.1102: the recorder chased three churned identities
+	// through the shared file and its final stop 404'd on the baked suite's dead
+	// session — zero segments). The bracket closes ONLY at finalize (done) or the
+	// time-budget rotation.
+	pinned := ""
 	closed := []closedBracket{}
 	seq := 0
 	for {
@@ -192,30 +201,34 @@ func runBracketLoop(cfg RecorderConfig, done <-chan struct{}) []closedBracket {
 				// identity at a 3600s idle cap). E-5 R1 2026-09-08, run 2026.251.1016:
 				// the fixture session's bracket was salvaged (404) the instant the file
 				// vanished, and row.json finalized with segments=0 despite the live
-				// session. HOLD the open bracket — the finalize (done) or the next
-				// session change closes it against the still-live session.
+				// session. HOLD the open bracket — the finalize (done) or the time
+				// rotation closes it against the still-live session.
 				continue
 			}
-			if current == nil || current.SessionID != sess.SessionID {
-				// new session (or first): close any stale bracket, open the new one
-				if current != nil {
-					if b, err := closeBracket(cfg, &seq, current); err == nil {
-						closed = append(closed, b)
-					} else {
-						fmt.Fprintf(os.Stderr, "charly-appium recorder: close bracket: %v\n", err)
-					}
-					current = nil
-				}
+			// E-5 R2 ONE-identity pin: once latched, the shared session file rotating
+			// to a DIFFERENT id is the BAKED suite's transient session churn — NOT a
+			// new recording subject. Ignore it: no close, no re-bracket — the bracket
+			// holds the pinned (fixture) session and closes only at done/time-rotation
+			// (the fixture itself never deletes/re-creates mid-run).
+			if pinned != "" && sess.SessionID != pinned {
+				continue
+			}
+			if current == nil {
+				// first latch (the pin) or a rotation-restart on the SAME pinned id
 				b, err := openBracket(cfg, sess)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "charly-appium recorder: start bracket: %v\n", err)
 					continue // retry next tick
 				}
+				if pinned == "" {
+					pinned = sess.SessionID
+				}
 				current = b
 				continue
 			}
 			// time-budget rotation: the device auto-stops at timeLimit; preempt at
-			// 80% so long phases keep continuous coverage.
+			// 80% so long phases keep continuous coverage. The restart reopens the
+			// SAME pinned session (any rotation to another id was ignored above).
 			if time.Since(current.StartedAt) >= rotationAfter(cfg.TimeLimit) {
 				if b, err := closeBracket(cfg, &seq, current); err == nil {
 					closed = append(closed, b)

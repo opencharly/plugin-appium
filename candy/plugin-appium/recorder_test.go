@@ -30,6 +30,28 @@ type fakeAppiumServer struct {
 	stops  int
 	bodies []map[string]any
 	video  []byte
+	// killed are session ids the fake server has TERMINATED (the phase-boundary
+	// session-create replaces the previous session server-side, or the pod
+	// recycled): a stop against a killed id 404s exactly like Appium's
+	// "A session is either terminated or not started".
+	killed map[string]bool
+}
+
+// kill mirrors the server-side session replacement: the id is no longer known.
+func (f *fakeAppiumServer) kill(sid string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.killed == nil {
+		f.killed = map[string]bool{}
+	}
+	f.killed[sid] = true
+}
+
+// isKilled reports whether the id was terminated server-side.
+func (f *fakeAppiumServer) isKilled(sid string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.killed != nil && f.killed[sid]
 }
 
 func newFakeAppiumServer(t *testing.T, video []byte) *fakeAppiumServer {
@@ -37,8 +59,9 @@ func newFakeAppiumServer(t *testing.T, video []byte) *fakeAppiumServer {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/wd/hub/session/", func(w http.ResponseWriter, r *http.Request) {
 		tail := strings.TrimPrefix(r.URL.Path, "/wd/hub/session/")
+		sid := tail
 		if i := strings.IndexByte(tail, '/'); i >= 0 {
-			tail = tail[i+1:]
+			sid, tail = tail[:i], tail[i+1:]
 		}
 		switch tail {
 		case "appium/start_recording_screen":
@@ -53,8 +76,15 @@ func newFakeAppiumServer(t *testing.T, video []byte) *fakeAppiumServer {
 			writeW3CValue(w, "")
 		case "appium/stop_recording_screen":
 			f.mu.Lock()
-			f.stops++
+			f.stops++ // every stop ATTEMPT is counted (a killed-session 404 included)
 			f.mu.Unlock()
+			if f.isKilled(sid) {
+				// the W3C invalid-session-id error the real server returns for a
+				// terminated session (newCommandTimeout expiry, replace, recycle)
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]any{"value": map[string]any{"error": "invalid session id", "message": "A session is either terminated or not started"}})
+				return
+			}
 			writeW3CValue(w, base64.StdEncoding.EncodeToString(video))
 		default:
 			http.NotFound(w, r)
@@ -193,14 +223,18 @@ func TestRunSessionRecorderBracketsAndFinalizes(t *testing.T) {
 	}
 }
 
-// TestRecorderIgnoresSessionFileRotation is the E-5 R2 ONE-identity pin contract:
-// the recorder pins the FIRST session it brackets (the fixture's session-create) and
-// a rotation of the SHARED session file to a DIFFERENT id — the baked suite's
-// transient session-create/delete churn — must NOT close the current bracket NOR
-// re-bracket onto the new id (run 2026.251.1102: the recorder chased three churned
-// identities and its final stop 404'd on the baked suite's dead session). The pinned
-// bracket holds to finalize and its video still lands.
-func TestRecorderIgnoresSessionFileRotation(t *testing.T) {
+// TestRecorderFollowsRotationToLiveSession is the E-5 R3 rotation contract (the
+// superseding re-scope of the R2 ONE-identity pin, which was itself the fix for the
+// baked suite's SHARED-file churn — run 2026.251.1102). With the baked av-suite
+// session lifecycle ISOLATED into its own session_file key (pod-android-emulator-
+// layer #9), the shared session file rotates ONLY at the fixture's phase-boundary
+// re-creates — and each re-create REPLACES the previous session server-side (or the
+// update phase recycled the pod). A first-latch pin then stops a DEAD session at
+// finalize (run 2026.251.1201: every phase green 302/0, still ok:false — the
+// finalize stop 404'd on the session pinned since check-live). The recorder must
+// FOLLOW the rotation: close the dead bracket (its stop 404s — no segment, nothing
+// was pullable), re-bracket the CURRENT live session, and finalize the stop on that.
+func TestRecorderFollowsRotationToLiveSession(t *testing.T) {
 	stateDir := t.TempDir()
 	artDir := t.TempDir()
 	xdg := t.TempDir()
@@ -216,26 +250,26 @@ func TestRecorderIgnoresSessionFileRotation(t *testing.T) {
 	ch := make(chan error, 1)
 	go func() { ch <- RunSessionRecorder(cfg, done) }()
 	waitFor(t, 2*time.Second, func() bool { s, _ := fake.counts(); return s >= 1 })
-	// the baked suite rotates the SHARED file to ITS transient session
+	// the fixture's next phase re-creates the session: the OLD session dies
+	// server-side (replaced) and the SHARED file rotates to the new id.
+	fake.kill("sid-1")
 	t.Setenv("XDG_CACHE_HOME", xdg)
-	if err := saveAppiumSession(&AppiumSession{SessionID: "baked-sid", BaseURL: fake.URL + "/wd/hub", CreatedAt: time.Now().UTC(), Image: "bed"}); err != nil {
+	if err := saveAppiumSession(&AppiumSession{SessionID: "sid-2", BaseURL: fake.URL + "/wd/hub", CreatedAt: time.Now().UTC(), Image: "bed"}); err != nil {
 		t.Fatalf("rotate session file: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
-	s, stop := fake.counts()
-	if s != 1 {
-		t.Errorf("start calls = %d, want 1 (no re-bracket onto the rotated id)", s)
+	// the rotation must close the dead bracket (one extra stop, 404 — no segment)
+	// and re-bracket the LIVE session
+	waitFor(t, 2*time.Second, func() bool { s, _ := fake.counts(); return s >= 2 })
+	if s, stop := fake.counts(); stop < 1 {
+		t.Errorf("start/stop = %d/%d, want a rotation close + re-bracket (stop >= 1)", s, stop)
 	}
-	if stop != 0 {
-		t.Errorf("stop calls = %d, want 0 (the pinned bracket must NOT be dropped by the rotation)", stop)
-	}
-	// finalize: the held pinned bracket's stop pulls the video and the row lands
+	// finalize: the stop lands on the LIVE sid-2, the row carries ITS segment
 	close(done)
 	if err := <-ch; err != nil {
 		t.Fatalf("RunSessionRecorder: %v", err)
 	}
-	if s, stop := fake.counts(); s != 1 || stop != 1 {
-		t.Fatalf("start/stop = %d/%d, want 1/1 (the ONE pinned bracket finalizes once)", s, stop)
+	if s, stop := fake.counts(); s != 2 || stop != 2 {
+		t.Fatalf("start/stop = %d/%d, want 2/2 (bracket on sid-1, rotation re-bracket on sid-2, finalize stop on sid-2)", s, stop)
 	}
 	raw, err := os.ReadFile(filepath.Join(stateDir, evidenceFile))
 	if err != nil {
@@ -245,11 +279,14 @@ func TestRecorderIgnoresSessionFileRotation(t *testing.T) {
 	if err := json.Unmarshal(raw, &row); err != nil {
 		t.Fatalf("decode row.json: %v", err)
 	}
-	if len(row.Segment) != 1 || len(row.Artifact) != 1 {
-		t.Errorf("row segments/artifacts = %d/%d, want 1/1 (the pinned bracket's video)", len(row.Segment), len(row.Artifact))
+	if len(row.Segment) != 1 {
+		t.Fatalf("row segments = %d, want 1 (only the LIVE session's video is pullable; the killed rotation close 404s with no segment)", len(row.Segment))
 	}
-	if len(row.Segment) == 1 && row.Segment[0]["session"] != "sid-1" {
-		t.Errorf("segment session = %v, want sid-1 (the Pinned fixture session, not the rotated id)", row.Segment[0]["session"])
+	if len(row.Segment) == 1 && row.Segment[0]["session"] != "sid-2" {
+		t.Errorf("segment session = %v, want sid-2 (the LIVE session the finalize stopped)", row.Segment[0]["session"])
+	}
+	if len(row.Artifact) != 1 {
+		t.Errorf("row artifacts = %d, want 1 (appium-1.mp4 from sid-2)", len(row.Artifact))
 	}
 }
 

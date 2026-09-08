@@ -156,15 +156,17 @@ func runBracketLoop(cfg RecorderConfig, done <-chan struct{}) []closedBracket {
 	tick := time.NewTicker(cfg.PollInterval)
 	defer tick.Stop()
 	var current *recordingBracket
-	// pinned is the recorder's ONE-IDENTITY latch: the FIRST session it brackets
-	// (the fixture's session-create). Rotations of the SHARED session file to OTHER
-	// ids are the baked suite's transient churn (its own session-create/delete for
-	// its av-* steps) and must neither drop the current bracket nor re-target it
-	// (E-5 R2, run 2026.251.1102: the recorder chased three churned identities
-	// through the shared file and its final stop 404'd on the baked suite's dead
-	// session — zero segments). The bracket closes ONLY at finalize (done) or the
-	// time-budget rotation.
-	pinned := ""
+	// Rotation policy (E-5 R2 → R3): with the av-suite's baked session lifecycle
+	// ISOLATED into its own session_file key (pod-android-emulator-layer #9), the
+	// SHARED session file rotates ONLY at the fixture's phase-boundary re-creates —
+	// one per live phase — and each re-create REPLACES the previous session
+	// server-side (session-create's delete-previous) OR the update phase recycled
+	// the pod. A first-latched pin would then stop a DEAD session at finalize:
+	// run 2026.251.1201 — every phase green (302/0), yet ok:false because the
+	// finalize stop 404'd on the pin held since check-live. The recorder therefore
+	// FOLLOWS the live session: a rotation closes the current (dead) bracket and
+	// re-brackets the CURRENT session, so the finalize always stops the live one.
+	// A vanished file (R1) is NOT a rotation — the open bracket holds (see below).
 	closed := []closedBracket{}
 	seq := 0
 	for {
@@ -205,30 +207,40 @@ func runBracketLoop(cfg RecorderConfig, done <-chan struct{}) []closedBracket {
 				// rotation closes it against the still-live session.
 				continue
 			}
-			// E-5 R2 ONE-identity pin: once latched, the shared session file rotating
-			// to a DIFFERENT id is the BAKED suite's transient session churn — NOT a
-			// new recording subject. Ignore it: no close, no re-bracket — the bracket
-			// holds the pinned (fixture) session and closes only at done/time-rotation
-			// (the fixture itself never deletes/re-creates mid-run).
-			if pinned != "" && sess.SessionID != pinned {
-				continue
-			}
 			if current == nil {
-				// first latch (the pin) or a rotation-restart on the SAME pinned id
+				// first latch, or a re-latch after a rotation closed the previous
+				// bracket: open on the CURRENT session from the file
 				b, err := openBracket(cfg, sess)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "charly-appium recorder: start bracket: %v\n", err)
 					continue // retry next tick
 				}
-				if pinned == "" {
-					pinned = sess.SessionID
-				}
 				current = b
+				continue
+			}
+			// phase-boundary rotation: the file now holds a DIFFERENT session id (the
+			// fixture's next phase re-created it; the previous session was replaced or
+			// the pod recycled). The old bracket's stop 404s against the dead session
+			// (logged, no segment — nothing was pullable); the new bracket opens on the
+			// LIVE session so the finalize stop always lands one.
+			if sess.SessionID != "" && current.SessionID != sess.SessionID {
+				if b, err := closeBracket(cfg, &seq, current); err == nil {
+					closed = append(closed, b)
+				} else {
+					fmt.Fprintf(os.Stderr, "charly-appium recorder: rotate bracket (session %s replaced by %s): %v\n", current.SessionID, sess.SessionID, err)
+				}
+				current = nil
+				nb, err := openBracket(cfg, sess)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "charly-appium recorder: rotation restart: %v\n", err)
+					continue
+				}
+				current = nb
 				continue
 			}
 			// time-budget rotation: the device auto-stops at timeLimit; preempt at
 			// 80% so long phases keep continuous coverage. The restart reopens the
-			// SAME pinned session (any rotation to another id was ignored above).
+			// SAME session (the file still holds it).
 			if time.Since(current.StartedAt) >= rotationAfter(cfg.TimeLimit) {
 				if b, err := closeBracket(cfg, &seq, current); err == nil {
 					closed = append(closed, b)

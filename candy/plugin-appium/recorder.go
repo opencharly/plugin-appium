@@ -83,6 +83,11 @@ type RecorderConfig struct {
 	Fps         int    // device-side encoding rate (optional)
 	VideoType   string // h264|mpeg4 (optional, server default)
 
+	// SessionFile is the SPAWN-STAMPED session-file path (EnvSessionFile); when set it
+	// wins over the re-derived appiumSessionPath — the cross-process env agreement fix
+	// (E-5 R1, 2026-09-08).
+	SessionFile string
+
 	// PollInterval is the session-file poll cadence (tests shrink it; default 500ms).
 	PollInterval time.Duration
 }
@@ -155,7 +160,15 @@ func runBracketLoop(cfg RecorderConfig, done <-chan struct{}) []closedBracket {
 			}
 			return closed
 		case <-tick.C:
-			sess, err := loadAppiumSession(cfg.Box, cfg.Instance)
+			var (
+				sess *AppiumSession
+				err  error
+			)
+			if cfg.SessionFile != "" {
+				sess, err = loadAppiumSessionPath(cfg.SessionFile)
+			} else {
+				sess, err = loadAppiumSession(cfg.Box, cfg.Instance)
+			}
 			if err != nil {
 				// transient read (e.g. the file mid-write): retry next tick
 				continue

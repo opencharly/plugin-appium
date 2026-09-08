@@ -9,7 +9,6 @@ import (
 	"github.com/opencharly/plugin-appium/candy/plugin-appium/params"
 )
 
-
 // TestBuildSessionSpawnStampsSessionFile is the E-5 cross-process env-agreement guard:
 // the session-start provider stamps EnvSessionFile with the exact path the plan's
 // session-create writes (appiumSessionPath in the SAME serve env), so the detached

@@ -253,6 +253,17 @@ func (s *w3cSession) setOrientation(o string) error {
 	return err
 }
 
+// sessionAlive probes a WebDriver session on its base URL: the W3C
+// GET /session/<id> answers 200 with the capabilities for a LIVE session and 404
+// ("A session is either terminated or not started") for a dead/replaced one — the
+// E-5 R5 aliasing liveness gate (a keyed create aliases only a LIVE shared
+// fixture; a stale id after a pod recycle falls back to a fresh create).
+func sessionAlive(base, sessionID string) bool {
+	s := newW3CSession(base, sessionID)
+	_, err := s.call(http.MethodGet, "/", nil)
+	return err == nil
+}
+
 // rawCall issues an arbitrary W3C call relative to /session/<id>. Backs `appium raw`.
 func (s *w3cSession) rawCall(method, path string, body any) (json.RawMessage, error) {
 	if !strings.HasPrefix(path, "/") {

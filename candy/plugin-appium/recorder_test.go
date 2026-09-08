@@ -327,6 +327,81 @@ func TestRecorderFinalizesWithoutSession(t *testing.T) {
 	}
 }
 
+// TestRecorderHoldsBracketAcrossTransientFileGone covers the E-5 R1 2026-09-08
+// (run 2026.251.1016) defect: the session file vanishing TRANSIENTLY — other steps'
+// churn (the baked suite's session-delete, the runner's phase sweep) deletes the
+// file while the WebDriver session itself stays alive server-side — must NOT close
+// the open bracket (the premature salvage stop would 404 against the still-live
+// session and drop the recording). The finalize (done) then pulls the video from the
+// live session and row.json lands segments=1 — the E-5 evidence contract.
+func TestRecorderHoldsBracketAcrossTransientFileGone(t *testing.T) {
+	stateDir := t.TempDir()
+	artDir := t.TempDir()
+	xdg := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", xdg)
+	fake := newFakeAppiumServer(t, fakeVideo)
+	sf := filepath.Join(xdg, "charly", "appium", "sessions", "bed.json")
+	if err := os.MkdirAll(filepath.Dir(sf), 0o700); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	saveRaw := func(sid string) {
+		t.Helper()
+		b, err := json.Marshal(&AppiumSession{
+			SessionID: sid, BaseURL: fake.URL + "/wd/hub",
+			CreatedAt: time.Now().UTC(), Image: "bed",
+		})
+		if err != nil {
+			t.Fatalf("marshal session: %v", err)
+		}
+		if err := os.WriteFile(sf, b, 0o600); err != nil {
+			t.Fatalf("write session file: %v", err)
+		}
+	}
+	saveRaw("sid-1")
+
+	cfg := RecorderConfig{
+		Box: "bed", StateDir: stateDir, ArtifactDir: artDir,
+		SessionID: "bed.member.cap", Venue: "check-appium-pod",
+		TimeLimit: 60, PollInterval: 20 * time.Millisecond,
+	}
+	done := make(chan struct{})
+	ch := make(chan error, 1)
+	go func() { ch <- RunSessionRecorder(cfg, done) }()
+	waitFor(t, 2*time.Second, func() bool { s, _ := fake.counts(); return s >= 1 })
+	// the session file vanishes TRANSIENTLY (other steps' churn) — the open bracket
+	// must SURVIVE: no salvage stop may hit the server.
+	if err := os.Remove(sf); err != nil {
+		t.Fatalf("remove session file: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if _, stop := fake.counts(); stop != 0 {
+		t.Fatalf("stop calls = %d after file vanish, want 0 (the bracket must NOT be salvaged)", stop)
+	}
+	// the file returns (the fixture's session stays alive) — the bracket keeps recording
+	if s, _ := fake.counts(); s != 1 {
+		t.Errorf("start calls = %d, want 1 (no re-bracket while the file is gone)", s)
+	}
+	// finalize: the still-open bracket's stop pulls the live video and the row lands
+	close(done)
+	if err := <-ch; err != nil {
+		t.Fatalf("RunSessionRecorder: %v", err)
+	}
+	if s, stop := fake.counts(); s != 1 || stop != 1 {
+		t.Fatalf("start/stop = %d/%d, want 1/1 (the held bracket finalizes once)", s, stop)
+	}
+	raw, err := os.ReadFile(filepath.Join(stateDir, evidenceFile))
+	if err != nil {
+		t.Fatalf("row.json: %v", err)
+	}
+	var row evidenceRow
+	if err := json.Unmarshal(raw, &row); err != nil {
+		t.Fatalf("decode row.json: %v", err)
+	}
+	if len(row.Segment) != 1 || len(row.Artifact) != 1 {
+		t.Errorf("row segments/artifacts = %d/%d, want 1/1 (the held bracket's video), got %+v", len(row.Segment), len(row.Artifact), row)
+	}
+}
+
 // TestRunSessionRecorderEmptyStateDir guards the recorder's honest failure when the
 // spawn env left no state dir.
 func TestRunSessionRecorderEmptyStateDir(t *testing.T) {

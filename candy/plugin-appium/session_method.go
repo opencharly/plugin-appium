@@ -119,6 +119,14 @@ func buildSessionSpawn(in *params.AppiumInput, env *checkEnv, exe, venue, logDir
 	if sf, err := appiumSessionPath(env.Box, env.Instance); err == nil {
 		e[EnvSessionFile] = sf
 	}
+	// Stamp the container name (CheckEnv.ContainerName) so the detached recorder
+	// re-inspects THE SAME container the plan's session-create steps resolve at
+	// bracket-open time — the live-forward re-resolution source (E-5 2026-09-08,
+	// run 2026.251.1016: the persisted session-file base_url went stale when the pod
+	// recycled and the recorder dialed the dead forward for the whole run).
+	if env.ContainerName != "" {
+		e[EnvContainerName] = env.ContainerName
+	}
 	if env.Instance != "" {
 		e[EnvInstance] = env.Instance
 	}
@@ -154,6 +162,16 @@ func buildSessionSpawn(in *params.AppiumInput, env *checkEnv, exe, venue, logDir
 func sessionStart(ctx context.Context, cc kit.CheckContext, env *checkEnv, in *params.AppiumInput, venueDefault string) (string, error) {
 	if in.StateDir == "" {
 		return "", fmt.Errorf("session start: state_dir required")
+	}
+	// A stale session file from a PREVIOUS run must never starve the new recorder:
+	// the ONE-identity fixture never deletes the file (no session-delete in the
+	// lifecycle), so the next run's recorder would open its first bracket against
+	// the prior run's DEAD session/endpoint and retry it (E-5 R1 2026-09-08, run
+	// 2026.251.1016: 147 connection-refused retries on the prior run's session at
+	// its dead host port). Start clean — this run's session-create re-writes the
+	// file before the recorder's bracket can latch anything.
+	if err := deleteAppiumSession(env.Box, env.Instance); err != nil {
+		return "", fmt.Errorf("session start: clear stale session file: %w", err)
 	}
 	exe, err := os.Executable()
 	if err != nil {

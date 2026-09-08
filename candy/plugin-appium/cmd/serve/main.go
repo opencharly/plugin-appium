@@ -46,17 +46,18 @@ func recorderMain() int {
 	timeLimit, _ := strconv.Atoi(os.Getenv(appium.EnvTimeLimit))
 	fps, _ := strconv.Atoi(os.Getenv(appium.EnvFps))
 	cfg := appium.RecorderConfig{
-		Box:         box,
-		Instance:    os.Getenv(appium.EnvInstance),
-		StateDir:    stateDir,
-		ArtifactDir: os.Getenv(appium.EnvArtifactDir),
-		SessionID:   sessionID,
-		Venue:       os.Getenv(appium.EnvVenue),
-		Phase:       os.Getenv(appium.EnvPhase),
-		TimeLimit:   timeLimit,
-		Fps:         fps,
-		VideoType:   os.Getenv(appium.EnvVideoType),
-		SessionFile: os.Getenv(appium.EnvSessionFile),
+		Box:           box,
+		Instance:      os.Getenv(appium.EnvInstance),
+		StateDir:      stateDir,
+		ArtifactDir:   os.Getenv(appium.EnvArtifactDir),
+		SessionID:     sessionID,
+		Venue:         os.Getenv(appium.EnvVenue),
+		Phase:         os.Getenv(appium.EnvPhase),
+		ContainerName: os.Getenv(appium.EnvContainerName),
+		TimeLimit:     timeLimit,
+		Fps:           fps,
+		VideoType:     os.Getenv(appium.EnvVideoType),
+		SessionFile:   os.Getenv(appium.EnvSessionFile),
 	}
 
 	done := make(chan struct{})

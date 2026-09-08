@@ -202,3 +202,31 @@ func TestEvidenceRowWire(t *testing.T) {
 		}
 	}
 }
+
+// TestSessionStartClearsStaleSessionFile covers the E-5 R1 2026-09-08 (run
+// 2026.251.1016) cross-run contamination: the ONE-identity fixture never deletes
+// the session file, so the NEXT run's recorder would open its first bracket
+// against the PRIOR run's dead session/endpoint. sessionStart deletes the stale
+// file before spawning the new recorder.
+func TestSessionStartClearsStaleSessionFile(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", xdg)
+	sf, err := appiumSessionPath("b", "")
+	if err != nil {
+		t.Fatalf("appiumSessionPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(sf), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(sf, []byte("{\"session_id\":\"stale\",\"base_url\":\"http://127.0.0.1:1\"}"), 0o600); err != nil {
+		t.Fatalf("write stale file: %v", err)
+	}
+	// the start dispatch reaches the stub submission AFTER clearing the stale file —
+	// the stub errors, proving the dispatch path ran and the delete preceded it.
+	if _, err := sessionStart(t.Context(), stubCC{}, &checkEnv{Box: "b"}, &params.AppiumInput{SessionId: "s", Action: "start", StateDir: "/x"}, ""); err == nil {
+		t.Fatal("sessionStart with stub cc: want error")
+	}
+	if _, statErr := os.Stat(sf); !os.IsNotExist(statErr) {
+		t.Fatalf("stale session file still present after session start: %v", statErr)
+	}
+}

@@ -37,9 +37,10 @@ func newW3CSession(base, sessionID string) *w3cSession {
 }
 
 // resolveW3CSession reads the session file unless an explicit session override was
-// passed, and returns a w3cSession ready for operations.
-func resolveW3CSession(box, instance, override string) (*w3cSession, error) {
-	sess, err := loadActiveSession(box, instance)
+// passed, and returns a w3cSession ready for operations. sessionFile keys an
+// authored ISOLATED session file (E-5 R3) — empty = the SHARED box file.
+func resolveW3CSession(box, instance, sessionFile, override string) (*w3cSession, error) {
+	sess, err := loadActiveSessionKeyed(box, instance, sessionFile)
 	if err != nil {
 		return nil, err
 	}
@@ -250,6 +251,17 @@ func (s *w3cSession) orientation() (string, error) {
 func (s *w3cSession) setOrientation(o string) error {
 	_, err := s.call(http.MethodPost, "/orientation", map[string]any{"orientation": o})
 	return err
+}
+
+// sessionAlive probes a WebDriver session on its base URL: the W3C
+// GET /session/<id> answers 200 with the capabilities for a LIVE session and 404
+// ("A session is either terminated or not started") for a dead/replaced one — the
+// E-5 R5 aliasing liveness gate (a keyed create aliases only a LIVE shared
+// fixture; a stale id after a pod recycle falls back to a fresh create).
+func sessionAlive(base, sessionID string) bool {
+	s := newW3CSession(base, sessionID)
+	_, err := s.call(http.MethodGet, "/", nil)
+	return err == nil
 }
 
 // rawCall issues an arbitrary W3C call relative to /session/<id>. Backs `appium raw`.

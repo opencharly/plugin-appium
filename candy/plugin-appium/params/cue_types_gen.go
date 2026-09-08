@@ -15,6 +15,15 @@ type AppiumInput struct {
 	// session — an explicit session id overriding the persisted session file.
 	Session string `yaml:"session,omitempty" json:"session,omitempty"`
 
+	// session_file — an EXTRA session-file key suffix (E-5 R3, 2026-09-08): an
+	// authored step that sets it keys its WebDriver session in its OWN file —
+	// <sessions>/<box>[_<instance>][_<session_file>].json — instead of the SHARED
+	// box file, so independent session lifecycles (the baked av-suite vs the
+	// fixture+recorder) never churn each other's file. Default (unset) = the shared
+	// box file, unchanged. session-create writes the keyed file; every other method
+	// reads the same keyed file.
+	SessionFile string `yaml:"session_file,omitempty" json:"session_file,omitempty"`
+
 	// strategy / selector — the element locator (find/click/send-keys/…).
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 

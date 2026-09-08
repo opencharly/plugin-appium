@@ -22,23 +22,25 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 // Recorder-mode env contract between provider.go's spawn env (buildSessionSpawn) and
 // cmd/serve's recorder mode (the reader).
 const (
-	EnvRecorder    = "CHARLY_APPIUM_RECORDER"
-	EnvBox         = "CHARLY_APPIUM_BOX"
-	EnvInstance    = "CHARLY_APPIUM_INSTANCE"
-	EnvStateDir    = "CHARLY_APPIUM_STATE_DIR"
-	EnvArtifactDir = "CHARLY_APPIUM_ARTIFACT_DIR"
-	EnvSessionID   = "CHARLY_APPIUM_SESSION_ID"
-	EnvVenue       = "CHARLY_APPIUM_VENUE"
-	EnvPhase       = "CHARLY_APPIUM_PHASE"
-	EnvTimeLimit   = "CHARLY_APPIUM_TIME_LIMIT"
-	EnvFps         = "CHARLY_APPIUM_FPS"
-	EnvVideoType   = "CHARLY_APPIUM_VIDEO_TYPE"
+	EnvRecorder      = "CHARLY_APPIUM_RECORDER"
+	EnvBox           = "CHARLY_APPIUM_BOX"
+	EnvInstance      = "CHARLY_APPIUM_INSTANCE"
+	EnvStateDir      = "CHARLY_APPIUM_STATE_DIR"
+	EnvArtifactDir   = "CHARLY_APPIUM_ARTIFACT_DIR"
+	EnvSessionID     = "CHARLY_APPIUM_SESSION_ID"
+	EnvVenue         = "CHARLY_APPIUM_VENUE"
+	EnvContainerName = "CHARLY_APPIUM_CONTAINER"
+	EnvPhase         = "CHARLY_APPIUM_PHASE"
+	EnvTimeLimit     = "CHARLY_APPIUM_TIME_LIMIT"
+	EnvFps           = "CHARLY_APPIUM_FPS"
+	EnvVideoType     = "CHARLY_APPIUM_VIDEO_TYPE"
 )
 
 // finalMarker is the deterministic end-of-stream marker the stop path greps for;
@@ -87,6 +89,14 @@ type RecorderConfig struct {
 	// wins over the re-derived appiumSessionPath — the cross-process env agreement fix
 	// (E-5 R1, 2026-09-08).
 	SessionFile string
+
+	// ContainerName is the SPAWN-STAMPED container name (CheckEnv.ContainerName — the
+	// SAME container the plan's session-create step resolved). At bracket-open time the
+	// recorder re-inspects THIS container for the LIVE host forward of the Appium port
+	// instead of trusting the persisted session-file BaseURL, which goes stale the
+	// moment the pod recycles (E-5 2026-09-08, run 2026.251.1016: the recorder dialed
+	// the dead pre-recycle forward for the whole run — zero brackets).
+	ContainerName string
 
 	// PollInterval is the session-file poll cadence (tests shrink it; default 500ms).
 	PollInterval time.Duration
@@ -146,6 +156,17 @@ func runBracketLoop(cfg RecorderConfig, done <-chan struct{}) []closedBracket {
 	tick := time.NewTicker(cfg.PollInterval)
 	defer tick.Stop()
 	var current *recordingBracket
+	// Rotation policy (E-5 R2 → R3): with the av-suite's baked session lifecycle
+	// ISOLATED into its own session_file key (pod-android-emulator-layer #9), the
+	// SHARED session file rotates ONLY at the fixture's phase-boundary re-creates —
+	// one per live phase — and each re-create REPLACES the previous session
+	// server-side (session-create's delete-previous) OR the update phase recycled
+	// the pod. A first-latched pin would then stop a DEAD session at finalize:
+	// run 2026.251.1201 — every phase green (302/0), yet ok:false because the
+	// finalize stop 404'd on the pin held since check-live. The recorder therefore
+	// FOLLOWS the live session: a rotation closes the current (dead) bracket and
+	// re-brackets the CURRENT session, so the finalize always stops the live one.
+	// A vanished file (R1) is NOT a rotation — the open bracket holds (see below).
 	closed := []closedBracket{}
 	seq := 0
 	for {
@@ -174,29 +195,21 @@ func runBracketLoop(cfg RecorderConfig, done <-chan struct{}) []closedBracket {
 				continue
 			}
 			if sess == nil {
-				if current != nil {
-					// the session file vanished: the plan deleted the session
-					// (stopRecordingScreen on a deleted session may already fail —
-					// the salvage attempt is best effort)
-					if b, err := closeBracket(cfg, &seq, current); err == nil {
-						closed = append(closed, b)
-					} else {
-						fmt.Fprintf(os.Stderr, "charly-appium recorder: salvage bracket: %v\n", err)
-					}
-					current = nil
-				}
+				// The session file vanished. The salvage-close-on-missing behavior
+				// (stop_recording_screen immediately) dropped the LAST bracket when the
+				// file disappeared TRANSIENTLY — other steps churn the file (the baked
+				// suite's session-delete, the runner's phase sweep) while the WebDriver
+				// session itself stays alive server-side (the E-5 fixture holds ONE
+				// identity at a 3600s idle cap). E-5 R1 2026-09-08, run 2026.251.1016:
+				// the fixture session's bracket was salvaged (404) the instant the file
+				// vanished, and row.json finalized with segments=0 despite the live
+				// session. HOLD the open bracket — the finalize (done) or the time
+				// rotation closes it against the still-live session.
 				continue
 			}
-			if current == nil || current.SessionID != sess.SessionID {
-				// new session (or first): close any stale bracket, open the new one
-				if current != nil {
-					if b, err := closeBracket(cfg, &seq, current); err == nil {
-						closed = append(closed, b)
-					} else {
-						fmt.Fprintf(os.Stderr, "charly-appium recorder: close bracket: %v\n", err)
-					}
-					current = nil
-				}
+			if current == nil {
+				// first latch, or a re-latch after a rotation closed the previous
+				// bracket: open on the CURRENT session from the file
 				b, err := openBracket(cfg, sess)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "charly-appium recorder: start bracket: %v\n", err)
@@ -205,8 +218,29 @@ func runBracketLoop(cfg RecorderConfig, done <-chan struct{}) []closedBracket {
 				current = b
 				continue
 			}
+			// phase-boundary rotation: the file now holds a DIFFERENT session id (the
+			// fixture's next phase re-created it; the previous session was replaced or
+			// the pod recycled). The old bracket's stop 404s against the dead session
+			// (logged, no segment — nothing was pullable); the new bracket opens on the
+			// LIVE session so the finalize stop always lands one.
+			if sess.SessionID != "" && current.SessionID != sess.SessionID {
+				if b, err := closeBracket(cfg, &seq, current); err == nil {
+					closed = append(closed, b)
+				} else {
+					fmt.Fprintf(os.Stderr, "charly-appium recorder: rotate bracket (session %s replaced by %s): %v\n", current.SessionID, sess.SessionID, err)
+				}
+				current = nil
+				nb, err := openBracket(cfg, sess)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "charly-appium recorder: rotation restart: %v\n", err)
+					continue
+				}
+				current = nb
+				continue
+			}
 			// time-budget rotation: the device auto-stops at timeLimit; preempt at
-			// 80% so long phases keep continuous coverage.
+			// 80% so long phases keep continuous coverage. The restart reopens the
+			// SAME session (the file still holds it).
 			if time.Since(current.StartedAt) >= rotationAfter(cfg.TimeLimit) {
 				if b, err := closeBracket(cfg, &seq, current); err == nil {
 					closed = append(closed, b)
@@ -233,9 +267,55 @@ func rotationAfter(timeLimit int) time.Duration {
 	return time.Duration(float64(timeLimit) * rotationFraction * float64(time.Second))
 }
 
+// resolveRecorderEndpoint returns the LIVE Appium base URL to dial at bracket-open
+// time. The persisted session-file BaseURL goes stale the moment the pod recycles (the
+// update phase recreates the container and the host-side 4723 forward moves), so the
+// recorder re-resolves the CURRENT endpoint from the container's live forward instead
+// of trusting the file — keeping the file's SessionID (the bearer) while refreshing the
+// endpoint (E-5 2026-09-08, run 2026.251.1016: the recorder dialed the dead pre-recycle
+// forward for the whole run, zero brackets). Mirror of container.go's appiumBaseURL —
+// the SAME resolution the plan's session-create used — so each bracket open dials the
+// LIVE forward. The container name is the spawn-stamped CheckEnv.ContainerName
+// (ENV_STAMP); the venue's podman-exec segment is the fallback when the stamp is
+// absent. Without ANY container context (unit harness, container-less plan step) the
+// persisted URL is the best available endpoint.
+func resolveRecorderEndpoint(cfg RecorderConfig, sess *AppiumSession) (string, error) {
+	name := cfg.ContainerName
+	if name == "" {
+		name = containerNameFromVenue(cfg.Venue)
+	}
+	if name != "" {
+		base, err := appiumBaseURL(&checkEnv{Box: cfg.Box, Instance: cfg.Instance, ContainerName: name}, appiumBasePath)
+		if err != nil {
+			return "", fmt.Errorf("re-resolve appium endpoint (container %s): %w", name, err)
+		}
+		return base, nil
+	}
+	return sess.BaseURL, nil
+}
+
+// containerNameFromVenue extracts the live container name from a podman-exec venue
+// string ("nested:podman-exec:charly-<box>/local" → "charly-<box>") — the recorder's
+// secondary container source when the spawn stamp is absent. Returns "" for a
+// non-podman-exec venue or an empty segment (no container context; the persisted
+// session-file URL is then the best available endpoint).
+func containerNameFromVenue(venue string) string {
+	i := strings.LastIndex(venue, "podman-exec:")
+	if i < 0 {
+		return ""
+	}
+	rest := venue[i+len("podman-exec:"):]
+	if j := strings.IndexByte(rest, '/'); j >= 0 {
+		rest = rest[:j]
+	}
+	return strings.TrimSpace(rest)
+}
+
 // openBracket opens the device-side recording bracket on the given WebDriver
 // session. timeLimit is ALWAYS sent (Appium's own default is only 180s — a phase
-// longer than that silently ends the bracket at the device).
+// longer than that silently ends the bracket at the device). The dial target is the
+// RE-RESOLVED live endpoint (resolveRecorderEndpoint), never the persisted
+// possibly-stale session-file BaseURL.
 func openBracket(cfg RecorderConfig, sess *AppiumSession) (*recordingBracket, error) {
 	opts := map[string]any{"timeLimit": cfg.TimeLimit}
 	if cfg.Fps > 0 {
@@ -244,7 +324,11 @@ func openBracket(cfg RecorderConfig, sess *AppiumSession) (*recordingBracket, er
 	if cfg.VideoType != "" {
 		opts["videoType"] = cfg.VideoType
 	}
-	s := newW3CSession(sess.BaseURL, sess.SessionID)
+	base, err := resolveRecorderEndpoint(cfg, sess)
+	if err != nil {
+		return nil, fmt.Errorf("startRecordingScreen on session %s: %w", sess.SessionID, err)
+	}
+	s := newW3CSession(base, sess.SessionID)
 	if _, err := s.call(http.MethodPost, "/appium/start_recording_screen", opts); err != nil {
 		return nil, fmt.Errorf("startRecordingScreen on session %s: %w", sess.SessionID, err)
 	}

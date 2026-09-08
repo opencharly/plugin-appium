@@ -28,7 +28,7 @@ func TestPersistedSessionHandleSharedAcrossVerbs(t *testing.T) {
 	}
 
 	// The in-plan verb path (find/click/app-start-activity): the persisted handle.
-	got, err := resolveW3CSession(want.Image, "", "")
+	got, err := resolveW3CSession(want.Image, "", "", "")
 	if err != nil {
 		t.Fatalf("resolveW3CSession: %v", err)
 	}

@@ -86,13 +86,13 @@ func dispatch(env *checkEnv, op *spec.Op) (string, error) {
 	case "session-create":
 		return runSessionCreate(env, &in)
 	case "session-delete":
-		return runSessionDelete(env)
+		return runSessionDelete(env, &in)
 	case "install-app":
 		return runInstallApp(env, &in)
 	}
 
 	// Every remaining method operates against the persisted session.
-	s, err := resolveW3CSession(env.Box, env.Instance, in.Session)
+	s, err := resolveW3CSession(env.Box, env.Instance, in.SessionFile, in.Session)
 	if err != nil {
 		return "", err
 	}
@@ -282,6 +282,40 @@ func runStatus(env *checkEnv) (string, error) {
 // caps moved INTO #AppiumInput in the schema compaction; the core #Op caps field
 // is setcap's modifier only now).
 func runSessionCreate(env *checkEnv, in *params.AppiumInput) (string, error) {
+	// E-5 R5 single-session aliasing: a KEYED session-create (the baked av-suite's
+	// session_file: baked lifecycle) running in the SAME live phase as the E-5
+	// fixture's shared session must NOT create a second server-side session — on a
+	// single-session device (UiAutomator2) a new create REPLACES the fixture session
+	// and the recorder's live-stop then 404s against the dead fixture (runs
+	// 2026.251.1201/1226: every phase green 302/0, evidence row segments=0). When
+	// the SHARED box file already holds a LIVE session, the keyed create ALIASES it
+	// into the keyed file (no server create — the fixture survives and the baked
+	// av-suite rides the fixture session through its keyed file). A missing or DEAD
+	// shared session falls back to the normal create (and the same fallback keeps
+	// post-recycle phases working: the stale fixture id fails the liveness probe and
+	// a fresh session is created instead of aliasing a corpse).
+	if in.SessionFile != "" {
+		if shared, _ := loadAppiumSessionKeyed(env.Box, env.Instance, ""); shared != nil {
+			base, err := appiumBaseURL(env, appiumBasePath)
+			if err != nil {
+				return "", err
+			}
+			if sessionAlive(base, shared.SessionID) {
+				alias := &AppiumSession{
+					SessionID: shared.SessionID,
+					BaseURL:   shared.BaseURL,
+					CreatedAt: time.Now().UTC(),
+					Image:     env.Box,
+					Instance:  env.Instance,
+					Caps:      shared.Caps,
+				}
+				if err := saveAppiumSessionKeyed(alias, in.SessionFile); err != nil {
+					return "", fmt.Errorf("aliasing shared session into keyed file: %w", err)
+				}
+				return shared.SessionID, nil
+			}
+		}
+	}
 	capsRaw := in.Caps
 	if strings.HasPrefix(capsRaw, "@") {
 		data, err := os.ReadFile(capsRaw[1:])
@@ -304,9 +338,9 @@ func runSessionCreate(env *checkEnv, in *params.AppiumInput) (string, error) {
 		return "", err
 	}
 	// Delete any previous session for this image+instance first (best effort).
-	if prev, _ := loadAppiumSession(env.Box, env.Instance); prev != nil {
+	if prev, _ := loadAppiumSessionKeyed(env.Box, env.Instance, in.SessionFile); prev != nil {
 		_ = appiumDeleteSessionRemote(base, prev.SessionID)
-		_ = deleteAppiumSession(env.Box, env.Instance)
+		_ = deleteAppiumSessionKeyed(env.Box, env.Instance, in.SessionFile)
 	}
 	caps := selenium.Capabilities(parsed)
 	wd, err := selenium.NewRemote(caps, base)
@@ -325,25 +359,38 @@ func runSessionCreate(env *checkEnv, in *params.AppiumInput) (string, error) {
 		Instance:  env.Instance,
 		Caps:      parsed,
 	}
-	if err := saveAppiumSession(sess); err != nil {
+	if err := saveAppiumSessionKeyed(sess, in.SessionFile); err != nil {
 		_ = wd.Quit()
 		return "", err
 	}
 	return sid, nil
 }
 
-func runSessionDelete(env *checkEnv) (string, error) {
-	sess, err := loadAppiumSession(env.Box, env.Instance)
+func runSessionDelete(env *checkEnv, in *params.AppiumInput) (string, error) {
+	sess, err := loadAppiumSessionKeyed(env.Box, env.Instance, in.SessionFile)
 	if err != nil {
 		return "", err
 	}
 	if sess == nil {
 		return "no session to delete", nil
 	}
+	// E-5 R5 alias guard: when the keyed entry ALIASES the shared fixture session
+	// (runSessionCreate above saved the fixture's id), the delete must NOT close the
+	// fixture server-side — only the keyed file goes away; the fixture survives for
+	// the recorder's live-stop. A keyed entry that is NOT the shared session is a
+	// genuine own lifecycle and deletes normally.
+	if in.SessionFile != "" {
+		if shared, _ := loadAppiumSessionKeyed(env.Box, env.Instance, ""); shared != nil && shared.SessionID == sess.SessionID {
+			if err := deleteAppiumSessionKeyed(env.Box, env.Instance, in.SessionFile); err != nil {
+				return "", err
+			}
+			return "deleted (alias — the shared fixture session stays live)", nil
+		}
+	}
 	// A DELETE failure is a warning (the server may have GC'd the session); the file is
 	// still removed.
 	_ = appiumDeleteSessionRemote(sess.BaseURL, sess.SessionID)
-	if err := deleteAppiumSession(env.Box, env.Instance); err != nil {
+	if err := deleteAppiumSessionKeyed(env.Box, env.Instance, in.SessionFile); err != nil {
 		return "", err
 	}
 	return "deleted", nil
@@ -355,7 +402,7 @@ func runInstallApp(env *checkEnv, in *params.AppiumInput) (string, error) {
 	if _, statErr := os.Stat(in.Apk); statErr != nil {
 		return "", fmt.Errorf("appium install-app: APK not found on host: %w", statErr)
 	}
-	sess, err := loadActiveSession(env.Box, env.Instance)
+	sess, err := loadActiveSessionKeyed(env.Box, env.Instance, in.SessionFile)
 	if err != nil {
 		return "", err
 	}

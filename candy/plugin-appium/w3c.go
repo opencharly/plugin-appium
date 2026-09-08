@@ -37,9 +37,10 @@ func newW3CSession(base, sessionID string) *w3cSession {
 }
 
 // resolveW3CSession reads the session file unless an explicit session override was
-// passed, and returns a w3cSession ready for operations.
-func resolveW3CSession(box, instance, override string) (*w3cSession, error) {
-	sess, err := loadActiveSession(box, instance)
+// passed, and returns a w3cSession ready for operations. sessionFile keys an
+// authored ISOLATED session file (E-5 R3) — empty = the SHARED box file.
+func resolveW3CSession(box, instance, sessionFile, override string) (*w3cSession, error) {
+	sess, err := loadActiveSessionKeyed(box, instance, sessionFile)
 	if err != nil {
 		return nil, err
 	}

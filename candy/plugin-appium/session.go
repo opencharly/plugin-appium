@@ -68,6 +68,79 @@ func appiumSessionPath(box, instance string) (string, error) {
 	return filepath.Join(dir, name+".json"), nil
 }
 
+// appiumSessionPathKeyed returns the session-file path honoring the authored
+// session_file key suffix (E-5 R3, 2026-09-08): an EMPTY key = the SHARED box file
+// (every existing consumer unchanged); a NON-EMPTY key = <box>[_<instance>]_<key>.json
+// — an ISOLATED file for an independent session lifecycle (the baked av-suite) that
+// must never churn the fixture+recorder's shared file (two lifecycles sharing one
+// file rotated + deleted each other's sessions mid-run; the recorder's pinned
+// bracket then 404'd at finalize — run 2026.251.1102/1122).
+func appiumSessionPathKeyed(box, instance, sessionFile string) (string, error) {
+	if sessionFile == "" {
+		return appiumSessionPath(box, instance)
+	}
+	dir, err := appiumSessionsDir()
+	if err != nil {
+		return "", err
+	}
+	name := box
+	if instance != "" {
+		name = box + "_" + instance
+	}
+	return filepath.Join(dir, name+"_"+sessionFile+".json"), nil
+}
+
+// loadAppiumSessionKeyed / saveAppiumSessionKeyed / deleteAppiumSessionKeyed are the
+// keyed variants of the shared-file helpers; an empty key is the shared file.
+func loadAppiumSessionKeyed(box, instance, sessionFile string) (*AppiumSession, error) {
+	path, err := appiumSessionPathKeyed(box, instance, sessionFile)
+	if err != nil {
+		return nil, err
+	}
+	return loadAppiumSessionPath(path)
+}
+
+func loadActiveSessionKeyed(box, instance, sessionFile string) (*AppiumSession, error) {
+	sess, err := loadAppiumSessionKeyed(box, instance, sessionFile)
+	if err != nil {
+		return nil, err
+	}
+	if sess == nil {
+		return nil, fmt.Errorf("no Appium session for image %q (instance=%q session_file=%q) — author an `appium: session-create` step with `caps:` first", box, instance, sessionFile)
+	}
+	return sess, nil
+}
+
+func saveAppiumSessionKeyed(sess *AppiumSession, sessionFile string) error {
+	if sess == nil {
+		return fmt.Errorf("saveAppiumSessionKeyed: nil session")
+	}
+	path, err := appiumSessionPathKeyed(sess.Image, sess.Instance, sessionFile)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(sess, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal session: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("writing session file %s: %w", path, err)
+	}
+	return nil
+}
+
+func deleteAppiumSessionKeyed(box, instance, sessionFile string) error {
+	path, err := appiumSessionPathKeyed(box, instance, sessionFile)
+	if err != nil {
+		return err
+	}
+	err = os.Remove(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing session file %s: %w", path, err)
+	}
+	return nil
+}
+
 // loadAppiumSession reads the on-disk session for an image+instance. Returns (nil, nil)
 // when the file doesn't exist — callers translate that to a "no session — run
 // session-create first" error at the call site for actionable context.
@@ -105,21 +178,7 @@ func loadAppiumSessionPath(path string) (*AppiumSession, error) {
 // 0600 permissions (the session id is a bearer token for the running Appium server's
 // API).
 func saveAppiumSession(sess *AppiumSession) error {
-	if sess == nil {
-		return fmt.Errorf("saveAppiumSession: nil session")
-	}
-	path, err := appiumSessionPath(sess.Image, sess.Instance)
-	if err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(sess, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal session: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("writing session file %s: %w", path, err)
-	}
-	return nil
+	return saveAppiumSessionKeyed(sess, "")
 }
 
 // deleteAppiumSession removes the session file (no error if absent).
@@ -139,12 +198,5 @@ func deleteAppiumSession(box, instance string) error {
 // verbs. Returns a user-friendly error pointing at session-create when the file is
 // missing.
 func loadActiveSession(box, instance string) (*AppiumSession, error) {
-	sess, err := loadAppiumSession(box, instance)
-	if err != nil {
-		return nil, err
-	}
-	if sess == nil {
-		return nil, fmt.Errorf("no Appium session for image %q (instance=%q) — author an `appium: session-create` step with `caps:` first", box, instance)
-	}
-	return sess, nil
+	return loadActiveSessionKeyed(box, instance, "")
 }

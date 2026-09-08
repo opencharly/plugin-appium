@@ -35,49 +35,12 @@ plugin-appium:
                 - contains: '"ready":true'
               context:
                 - runtime
-            - check: a WebDriver session is created (the persisted session file the session recorder discovers)
-              id: appium-session-create
-              appium:
-                method: session-create
-                caps: |
-                  {"platformName":"Android","appium:automationName":"UiAutomator2","appium:deviceName":"emulator-5554","appium:noReset":true,"appium:uiautomator2ServerInstallTimeout":240000,"appium:uiautomator2ServerLaunchTimeout":240000}
-              timeout: 600s
-              context:
-                - runtime
-            - check: the appium session method starts the DETACHED device-side recording bracket (the recorder spawns through the runner's generic background-session service and opens startRecordingScreen on the persisted session)
-              id: appium-session-start
-              appium:
-                method: session
-                action: start
-                session_id: ade-appium-session
-                time_limit: 120
-              stdout:
-                - contains: started
-              context:
-                - runtime
-            - check: the appium session status reports the detached recorder alive
-              id: appium-session-status
-              appium:
-                method: session
-                action: status
-                session_id: ade-appium-session
-              stdout:
-                - contains: alive=true
-              context:
-                - runtime
-            - check: the appium session stop finalizes the bracket and its evidence row (pulled MP4 + row.json)
-              id: appium-session-stop
-              appium:
-                method: session
-                action: stop
-                session_id: ade-appium-session
-              stdout:
-                - contains: stopped
-              context:
-                - runtime
-            - check: the WebDriver session is deleted (closes the bracket's session cleanly)
-              id: appium-session-delete
-              appium:
-                method: session-delete
-              context:
-                - runtime
+            # E-5 R3 (2026-09-08, R5): the baked session lifecycle is DELETED here —
+            # the distro fixture owns the ONE-identity WebDriver session (its overlay
+            # session-create with the 3600s caps) and the RUNNER's instrument recorder
+            # brackets it; a parallel create/recorder/delete inside this candy's plan
+            # churned the SHARED session file mid-run, deleted the fixture's pinned
+            # session server-side, and the recorder's final stop then 404'd
+            # (runs 2026.251.1102/1122 — the evidence gate failed with segments=0).
+            # This plugin's plan now only probes the server (status); the session
+            # method remains fully served to consumers that author it.

@@ -86,13 +86,13 @@ func dispatch(env *checkEnv, op *spec.Op) (string, error) {
 	case "session-create":
 		return runSessionCreate(env, &in)
 	case "session-delete":
-		return runSessionDelete(env)
+		return runSessionDelete(env, &in)
 	case "install-app":
 		return runInstallApp(env, &in)
 	}
 
 	// Every remaining method operates against the persisted session.
-	s, err := resolveW3CSession(env.Box, env.Instance, in.Session)
+	s, err := resolveW3CSession(env.Box, env.Instance, in.SessionFile, in.Session)
 	if err != nil {
 		return "", err
 	}
@@ -304,9 +304,9 @@ func runSessionCreate(env *checkEnv, in *params.AppiumInput) (string, error) {
 		return "", err
 	}
 	// Delete any previous session for this image+instance first (best effort).
-	if prev, _ := loadAppiumSession(env.Box, env.Instance); prev != nil {
+	if prev, _ := loadAppiumSessionKeyed(env.Box, env.Instance, in.SessionFile); prev != nil {
 		_ = appiumDeleteSessionRemote(base, prev.SessionID)
-		_ = deleteAppiumSession(env.Box, env.Instance)
+		_ = deleteAppiumSessionKeyed(env.Box, env.Instance, in.SessionFile)
 	}
 	caps := selenium.Capabilities(parsed)
 	wd, err := selenium.NewRemote(caps, base)
@@ -325,15 +325,15 @@ func runSessionCreate(env *checkEnv, in *params.AppiumInput) (string, error) {
 		Instance:  env.Instance,
 		Caps:      parsed,
 	}
-	if err := saveAppiumSession(sess); err != nil {
+	if err := saveAppiumSessionKeyed(sess, in.SessionFile); err != nil {
 		_ = wd.Quit()
 		return "", err
 	}
 	return sid, nil
 }
 
-func runSessionDelete(env *checkEnv) (string, error) {
-	sess, err := loadAppiumSession(env.Box, env.Instance)
+func runSessionDelete(env *checkEnv, in *params.AppiumInput) (string, error) {
+	sess, err := loadAppiumSessionKeyed(env.Box, env.Instance, in.SessionFile)
 	if err != nil {
 		return "", err
 	}
@@ -343,7 +343,7 @@ func runSessionDelete(env *checkEnv) (string, error) {
 	// A DELETE failure is a warning (the server may have GC'd the session); the file is
 	// still removed.
 	_ = appiumDeleteSessionRemote(sess.BaseURL, sess.SessionID)
-	if err := deleteAppiumSession(env.Box, env.Instance); err != nil {
+	if err := deleteAppiumSessionKeyed(env.Box, env.Instance, in.SessionFile); err != nil {
 		return "", err
 	}
 	return "deleted", nil
@@ -355,7 +355,7 @@ func runInstallApp(env *checkEnv, in *params.AppiumInput) (string, error) {
 	if _, statErr := os.Stat(in.Apk); statErr != nil {
 		return "", fmt.Errorf("appium install-app: APK not found on host: %w", statErr)
 	}
-	sess, err := loadActiveSession(env.Box, env.Instance)
+	sess, err := loadActiveSessionKeyed(env.Box, env.Instance, in.SessionFile)
 	if err != nil {
 		return "", err
 	}

@@ -112,6 +112,13 @@ func buildSessionSpawn(in *params.AppiumInput, env *checkEnv, exe, venue, logDir
 		EnvSessionID: in.SessionId,
 		EnvTimeLimit: strconv.Itoa(tl),
 	}
+	// Stamp the EXACT session-file path the plan's session-create writes (same
+	// env.Box/Instance resolved in THIS serve-process env) so the detached recorder
+	// polls that file instead of re-deriving a HOME/XDG_CACHE_HOME-dependent path
+	// that diverges from the serve env (E-5 R1: zero-bracket recorder on 0347/0421).
+	if sf, err := appiumSessionPath(env.Box, env.Instance); err == nil {
+		e[EnvSessionFile] = sf
+	}
 	if env.Instance != "" {
 		e[EnvInstance] = env.Instance
 	}

@@ -56,6 +56,7 @@ func recorderMain() int {
 		TimeLimit:   timeLimit,
 		Fps:         fps,
 		VideoType:   os.Getenv(appium.EnvVideoType),
+		SessionFile: os.Getenv(appium.EnvSessionFile),
 	}
 
 	done := make(chan struct{})

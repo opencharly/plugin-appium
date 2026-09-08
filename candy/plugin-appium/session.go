@@ -31,6 +31,11 @@ type AppiumSession struct {
 	Caps      map[string]any `json:"caps,omitempty"`
 }
 
+// EnvSessionFile is the spawn-stamped session-file path (recorder env contract;
+// buildSessionSpawn resolves it with appiumSessionPath in the plugin-serve env so
+// the detached recorder polls EXACTLY the file the plan's session-create writes).
+const EnvSessionFile = "CHARLY_APPIUM_SESSION_FILE"
+
 // appiumSessionsDir returns ~/.cache/charly/appium/sessions, creating it on demand.
 // Honours XDG_CACHE_HOME when set (per the XDG Base Directory Specification).
 func appiumSessionsDir() (string, error) {
@@ -71,6 +76,17 @@ func loadAppiumSession(box, instance string) (*AppiumSession, error) {
 	if err != nil {
 		return nil, err
 	}
+	return loadAppiumSessionPath(path)
+}
+
+// loadAppiumSessionPath reads the explicitly-stamped session file. The check-bed
+// recorder resolves its session file via the SPAWN-STAMPED path (EnvSessionFile)
+// rather than re-deriving it: session-create (plugin-serve env) and recorder
+// (detached spawn env) may disagree on HOME/XDG_CACHE_HOME, and a re-derived path
+// then points at a file the plan never writes — the E-5 zero-bracket defect (R1
+// 2026-09-08, runs 0347/0421: every run final segments=0, the recorder polled a
+// path the plan's session-create never touched).
+func loadAppiumSessionPath(path string) (*AppiumSession, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil, nil

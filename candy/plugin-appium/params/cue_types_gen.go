@@ -7,6 +7,11 @@ package params
 type AppiumInput struct {
 	// method — the appium method name (the former core #AppiumMethod enum; the
 	// verb's PRIMARY input field, so `appium: status` desugars to {method: "status"}).
+	//
+	// S3: the words are rows of the `_method` table at the foot of this file, and the
+	// enum this field accepts is derived from that table's word list, so the catalog
+	// has ONE home — a new method is ONE row there, and the table, the derived list
+	// and the enum cannot disagree.
 	Method string `yaml:"method,omitempty" json:"method"`
 
 	// caps — the W3C capabilities JSON (session-create; @path reads a file).
@@ -85,6 +90,8 @@ type AppiumInput struct {
 	// approaches, and on SIGTERM pulls stopRecordingScreen → MP4 + the evidence
 	// row.json. venue/phase are stamped into the evidence row; artifact_dir is the
 	// runner-injected generic evidence dir the pulled MP4s land in.
+	//
+	// S3: rows of the `_action` table at the foot of this file.
 	Action string `yaml:"action,omitempty" json:"action,omitempty"`
 
 	// time_limit — the device-side recording cap in seconds (startRecordingScreen's

@@ -2,8 +2,6 @@ module github.com/opencharly/plugin-appium/candy/plugin-appium
 
 go 1.26.8
 
-require github.com/tebeka/selenium v0.9.9
-
 require (
 	cuelabs.dev/go/oci/ociregistry v0.0.0-20251212221603-3adeb8663819 // indirect
 	github.com/alecthomas/kong v1.15.0 // indirect
@@ -16,7 +14,6 @@ require (
 
 require (
 	cuelang.org/go v0.16.1
-	github.com/blang/semver v3.5.1+incompatible // indirect
 	github.com/cockroachdb/apd/v3 v3.2.1 // indirect
 	github.com/emicklei/proto v1.14.3 // indirect
 	github.com/fatih/color v1.15.0 // indirect

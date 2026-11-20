@@ -341,16 +341,33 @@ func strategyToBy(strategy string) (string, error) {
 // chain makes the whole graph unresolvable — so the fleet could not be graded at all (P33,
 // opencharly/plugin-pipeline#70). Two calls are not worth a 2019 dependency: this plugin already
 // speaks W3C for everything else (appiumDeleteSessionRemote sits above).
-func appiumCreateSessionRemote(base string, caps map[string]any) (string, error) {
+// appiumCreateSessionRequest builds the W3C `POST /session` this plugin sends. It is split
+// out of appiumCreateSessionRemote so the WIRE SHAPE — the URL, the method, the header and
+// the `capabilities.alwaysMatch` envelope — is a PURE function a test can assert on with no
+// server present.
+//
+// WHY THE SPLIT EXISTS (R8): the boundary is a live Appium HTTP API, and R8 forbids pinning a
+// real service boundary with a fake. Splitting the builder from the call lets the wire shape
+// be unit-tested with NO server present — so nothing is faked — while the boundary itself is
+// covered live-or-visible-skip. Neither claim leans on the other.
+func appiumCreateSessionRequest(base string, caps map[string]any) (*http.Request, error) {
 	payload, err := json.Marshal(map[string]any{"capabilities": map[string]any{"alwaysMatch": caps}})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	req, err := http.NewRequest(http.MethodPost, base+"/session", bytes.NewReader(payload))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	return req, nil
+}
+
+func appiumCreateSessionRemote(base string, caps map[string]any) (string, error) {
+	req, err := appiumCreateSessionRequest(base, caps)
+	if err != nil {
+		return "", err
+	}
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {

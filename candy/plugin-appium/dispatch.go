@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tebeka/selenium"
-
 	"github.com/opencharly/plugin-appium/candy/plugin-appium/params"
 	"github.com/opencharly/sdk"
 	"github.com/opencharly/sdk/kit"
@@ -342,12 +340,10 @@ func runSessionCreate(env *checkEnv, in *params.AppiumInput) (string, error) {
 		_ = appiumDeleteSessionRemote(base, prev.SessionID)
 		_ = deleteAppiumSessionKeyed(env.Box, env.Instance, in.SessionFile)
 	}
-	caps := selenium.Capabilities(parsed)
-	wd, err := selenium.NewRemote(caps, base)
+	sid, err := appiumCreateSessionRemote(base, parsed)
 	if err != nil {
 		return "", fmt.Errorf("creating Appium session at %s: %w", base, err)
 	}
-	sid := wd.SessionID()
 	if sid == "" {
 		return "", fmt.Errorf("appium session created but SessionID was empty")
 	}
@@ -360,7 +356,8 @@ func runSessionCreate(env *checkEnv, in *params.AppiumInput) (string, error) {
 		Caps:      parsed,
 	}
 	if err := saveAppiumSessionKeyed(sess, in.SessionFile); err != nil {
-		_ = wd.Quit()
+		// Tear the orphaned session down through the SAME W3C path everything else uses.
+		_ = appiumDeleteSessionRemote(base, sid)
 		return "", err
 	}
 	return sid, nil

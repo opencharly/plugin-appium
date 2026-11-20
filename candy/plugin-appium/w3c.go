@@ -10,8 +10,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/tebeka/selenium"
 )
 
 // w3c.go is the raw-HTTP W3C WebDriver client, moved VERBATIM from charly/appium.go in
@@ -316,19 +314,77 @@ func substituteElement(s, elemID string) string {
 func strategyToBy(strategy string) (string, error) {
 	switch strings.ToLower(strategy) {
 	case "", "xpath":
-		return selenium.ByXPATH, nil
+		return "xpath", nil
 	case "id":
-		return selenium.ByID, nil
+		return "id", nil
 	case "accessibility-id":
 		return "accessibility id", nil
 	case "class-name":
-		return selenium.ByClassName, nil
+		return "class name", nil
 	case "android-uiautomator":
 		return "-android uiautomator", nil
 	case "name":
-		return selenium.ByName, nil
+		return "name", nil
 	case "css":
-		return selenium.ByCSSSelector, nil
+		return "css selector", nil
 	}
 	return "", fmt.Errorf("unknown strategy %q (allowed: xpath, id, accessibility-id, class-name, android-uiautomator, name, css)", strategy)
+}
+
+// appiumCreateSessionRemote creates a W3C WebDriver session and returns its id.
+//
+// WHY THIS EXISTS: the plugin used `github.com/tebeka/selenium` for exactly TWO calls — NewRemote
+// and the SessionID/Quit pair — and that 2019 library drags `cloud.google.com/go@v0.41.0` and
+// `google.golang.org/api@v0.7.0`, which in turn require a 2019 `google.golang.org/genproto` that
+// double-provides `googleapis/rpc/status` alongside the modern split module. In a workspace where
+// every compiled-in plugin shares one module graph (the `--dev-plugin` build), that single stale
+// chain makes the whole graph unresolvable — so the fleet could not be graded at all (P33,
+// opencharly/plugin-pipeline#70). Two calls are not worth a 2019 dependency: this plugin already
+// speaks W3C for everything else (appiumDeleteSessionRemote sits above).
+// appiumCreateSessionRequest builds the W3C `POST /session` this plugin sends. It is split
+// out of appiumCreateSessionRemote so the WIRE SHAPE — the URL, the method, the header and
+// the `capabilities.alwaysMatch` envelope — is a PURE function a test can assert on with no
+// server present.
+//
+// WHY THE SPLIT EXISTS (R8): the boundary is a live Appium HTTP API, and R8 forbids pinning a
+// real service boundary with a fake. Splitting the builder from the call lets the wire shape
+// be unit-tested with NO server present — so nothing is faked — while the boundary itself is
+// covered live-or-visible-skip. Neither claim leans on the other.
+func appiumCreateSessionRequest(base string, caps map[string]any) (*http.Request, error) {
+	payload, err := json.Marshal(map[string]any{"capabilities": map[string]any{"alwaysMatch": caps}})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(http.MethodPost, base+"/session", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return req, nil
+}
+
+func appiumCreateSessionRemote(base string, caps map[string]any) (string, error) {
+	req, err := appiumCreateSessionRequest(base, caps)
+	if err != nil {
+		return "", err
+	}
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("POST /session: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var out struct {
+		Value struct {
+			SessionID string `json:"sessionId"`
+		} `json:"value"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", fmt.Errorf("POST /session: decode reply: %w", err)
+	}
+	return out.Value.SessionID, nil
 }
